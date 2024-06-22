@@ -5,11 +5,24 @@ import "net"
 import "os"
 import "net/rpc"
 import "net/http"
-
+import "fmt"
+import "time"
 
 type Coordinator struct {
 	// Your definitions here.
+	files []string
+	nReduce int
 
+	mutex chan bool
+	
+	mapTaskAssign []bool
+	mapTaskFinish []bool
+
+	isMapPhase bool
+	isFinish bool
+
+	reduceTaskAssign []bool
+	reduceTaskFinish []bool
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -41,6 +54,105 @@ func (c *Coordinator) server() {
 	go http.Serve(l, nil)
 }
 
+func (c *Coordinator) AssignTask(args *AssignArgs, reply *AssignReply) error {
+	if c.isFinish {
+		reply.isFinish = true
+		return nil
+	}
+	reply.isFinish = false
+	reply.nReduce = c.nReduce
+
+	var taskID int
+	var isMap bool
+	flag := false
+	for msg <- c.mutex{
+		if msg == nil {
+			continue
+		}
+		else {
+			if c.isMapPhase {
+				reply.isMap = true
+				isMap = true
+
+				for i, b in range mapTaskAssign {
+					if !b {
+						if mapTaskFinish[i] {
+							mapTaskAssign[i] = true
+							continue
+						}
+
+						reply.taskID = i
+						reply.inputFile = c.files[i]
+						mapTaskAssign[i] = true
+
+						taskID = i
+						flag = true
+						break
+					}
+				}
+			} 
+			else {
+				reply.isMap = false
+				isMap = false
+
+				for i, b in range reduceTaskAssign {
+					if !b {
+						if reduceTaskFinish[i] {
+							reduceTaskAssign[i] = true
+							continue
+						}
+
+						reply.taskID = i
+						reply.inputFile = fmt.Sprintf("mr-out-%d", i)
+						replyTaskAssign[i] = true
+
+						taskID = i
+						flag = true
+						break
+					}
+				}
+			}
+
+			c.mutex <- true
+			break
+		}
+	}
+
+	if flag {
+		defer checkTask(isMap, taskID)
+	}
+
+	return nil
+}
+
+func (c *Coordinator) checkTask(isMap bool, taskID int) {
+	time.Sleep(10 * time.Second)
+	if isMap {
+		if !c.mapTaskFinish[taskID] {
+			c.mapTaskAssign[taskID] = false
+		}
+	}
+	else {
+		if !c.reduceTaskFinish[taskID] {
+			c.reduceTaskAssign[taskID] = false
+		}
+	}
+}
+
+func (c *Coordinator) FinishTask(args *AssignArgs, reply *AssignReply) error {
+	if c.isFinish {
+		reply.isFinish = true
+		return fmt.Errorf("This task is already finished")
+	}
+
+	if args.isMap {
+		c.mapTaskFinish[taskID] = true
+	}
+	else {
+		c.reduceTaskFinish[taskID] = true
+	}
+}
+
 //
 // main/mrcoordinator.go calls Done() periodically to find out
 // if the entire job has finished.
@@ -50,7 +162,21 @@ func (c *Coordinator) Done() bool {
 
 	// Your code here.
 
+	// map phase
+	for !c.mapIsDone(){
+		// loop
+	}
 
+	c.isMapPhase = false
+
+	// reduce phase
+	for !c.reduceIsDone(){
+		// loop
+	}
+
+	c.isFinish = true
+
+	ret = true
 	return ret
 }
 
@@ -60,10 +186,22 @@ func (c *Coordinator) Done() bool {
 // nReduce is the number of reduce tasks to use.
 //
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
-	c := Coordinator{}
+	c := Coordinator{
+		files: files,
+		nReduce: nReduce,
+		isMapPhase: true
+		isFinish: false
+	}
 
 	// Your code here.
 
+	c.mutex = make(chan bool, 1)
+	c.mutex <- true
+
+	c.mapTaskAssign = make([]bool, len(files))
+	c.mapTaskFinish = make([]bool, len(files))
+	c.reduceTaskAssign = make([]bool, nReduce)
+	c.reduceTaskFinish = make([]bool, nReduce)
 
 	c.server()
 	return &c

@@ -22,6 +22,27 @@ type ExampleReply struct {
 	Y int
 }
 
+type AssignArgs struct {
+	// empty struct
+}
+
+type AssignReply struct {
+	isFinish bool
+	isMap bool
+	taskID int
+	nReduce int
+	inputFile string
+}
+
+type FinishArgs struct {
+	isMap bool
+	taskID int
+}
+
+type FinishReply struct {
+	// empty struct
+}
+
 // Add your RPC definitions here.
 
 
