@@ -45,13 +45,11 @@ func Worker(mapf func(string, string) []KeyValue,
 		finished, isMap, taskID, nReduce, inputFile:= getAssign()
 		if finished {
 			break
-		}
-		else if taskID == -1 {
+		} else if taskID == -1 {
 			// getAssign failed
 			time.Sleep(100 * time.Millisecond)
 			continue
-		}
-		else if isMap {
+		} else if isMap {
 			// map phase, taskID = fileIdx
 			tempFiles := make([]File, nReduce)
 			for i:=0; i<nReduce; i++ {
@@ -94,15 +92,13 @@ func Worker(mapf func(string, string) []KeyValue,
 				if err != nil {
 					// dst already exists
 					os.Remove(tmpf.name())
-				}
-				else {
+				} else {
 					tmpf.Close()
 				}
 			}
 
 			finishMapTask(taskID)
-		}
-		else{
+		} else{
 			// reduce phase
 			input, err := os.Open(inputFile)
 			if err != nil {
@@ -151,8 +147,7 @@ func Worker(mapf func(string, string) []KeyValue,
 			if err != nil {
 				// dst already exists
 				os.Remove(tempFile.name())
-			}
-			else {
+			} else {
 				tempFile.Close()
 			}
 
@@ -170,8 +165,7 @@ func getAssign() (bool, bool, int, int, string) {
 	ok := call("Coordinator.AssignTask", &args, &reply)
 	if ok {
 		return reply.isFinish, reply.isMap, reply.taskID, reply.nReduce, reply.inputFile
-	}
-	else {
+	} else {
 		return true, false, -1, -1, nil
 	}
 }

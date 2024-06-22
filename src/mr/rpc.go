@@ -40,7 +40,7 @@ type FinishArgs struct {
 }
 
 type FinishReply struct {
-	// empty struct
+	isFinish bool
 }
 
 // Add your RPC definitions here.
