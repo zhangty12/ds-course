@@ -56,42 +56,45 @@ func (c *Coordinator) server() {
 
 func (c *Coordinator) AssignTask(args *AssignArgs, reply *AssignReply) error {
 	if c.isFinish {
-		reply.isFinish = true
+		reply.IsFinish = true
 		return nil
 	}
-	reply.isFinish = false
-	reply.nReduce = c.nReduce
+	reply.IsFinish = false
+	reply.NReduce = c.nReduce
 
-	var taskID int
-	var isMap bool
+	taskID := -1
+	isMap := c.isMapPhase
 	flag := false
 	
 	// wait on channel
 	<- c.mutex 
 
 	if c.isMapPhase {
-		reply.isMap = true
-			isMap = true
 
-			for i, b := range c.mapTaskAssign {
-				if !b {
-					if c.mapTaskFinish[i] {
-						c.mapTaskAssign[i] = true
-						continue
-					}
+		reply.IsMap = true
+		isMap = true
 
-					reply.taskID = i
-					reply.inputFile = c.files[i]
+		for i, b := range c.mapTaskAssign {
+			if !b {
+				if c.mapTaskFinish[i] {
 					c.mapTaskAssign[i] = true
-
-					taskID = i
-					flag = true
-					break
+					continue
 				}
+
+				reply.TaskID = i
+				reply.InputFile = c.files[i]
+				c.mapTaskAssign[i] = true
+
+				taskID = i
+				flag = true
+
+				// fmt.Printf("Assign map task-%d\n", reply.TaskID)
+				reply.ReplyPrint()
+				break
 			}
-		} else {
-			
-		reply.isMap = false
+		}
+	} else {
+		reply.IsMap = false
 		isMap = false
 
 		for i, b := range c.reduceTaskAssign {
@@ -101,19 +104,24 @@ func (c *Coordinator) AssignTask(args *AssignArgs, reply *AssignReply) error {
 					continue
 				}
 
-				reply.taskID = i
-				reply.inputFile = fmt.Sprintf("mr-out-%d", i)
+				reply.TaskID = i
+				reply.InputFile = fmt.Sprintf("mr-out-%d", i)
 				c.reduceTaskAssign[i] = true
 
 				taskID = i
 				flag = true
+
+				// fmt.Printf("Assign reduce task-%d\n", reply.TaskID)
+				reply.ReplyPrint()
 				break
 			}
 		}
 	}
+
 	c.mutex <- true	
 
 	if flag {
+		//fmt.Println(isMap, taskID)
 		defer c.checkTask(isMap, taskID)
 	}
 
@@ -135,17 +143,41 @@ func (c *Coordinator) checkTask(isMap bool, taskID int) {
 
 func (c *Coordinator) FinishTask(args *FinishArgs, reply *FinishReply) error {
 	if c.isFinish {
-		reply.isFinish = true
+		reply.IsFinish = true
 		return fmt.Errorf("This task is already finished")
 	}
 
-	if args.isMap {
-		c.mapTaskFinish[args.taskID] = true
+	if args.IsMap {
+		c.mapTaskFinish[args.TaskID] = true
 	} else {
-		c.reduceTaskFinish[args.askID] = true
+		c.reduceTaskFinish[args.TaskID] = true
 	}
 
 	return nil
+}
+
+func (c *Coordinator) mapIsDone() bool {
+	flag := true
+	for _, b := range c.mapTaskFinish {
+		if !b {
+			flag = false
+			break
+		}
+	}
+	c.isMapPhase = !flag
+	return flag
+}
+
+func (c *Coordinator) reduceIsDone() bool {
+	flag := true
+	for _, b := range c.reduceTaskFinish {
+		if !b {
+			flag = false
+			break
+		}
+	}
+	c.isFinish = flag
+	return flag
 }
 
 //
@@ -163,6 +195,7 @@ func (c *Coordinator) Done() bool {
 	}
 
 	c.isMapPhase = false
+	fmt.Printf("Map phase finished\n")
 
 	// reduce phase
 	for !c.reduceIsDone(){
@@ -170,6 +203,7 @@ func (c *Coordinator) Done() bool {
 	}
 
 	c.isFinish = true
+	fmt.Printf("Reduce phase finished\n")
 
 	ret = true
 	return ret

@@ -8,6 +8,7 @@ package mr
 
 import "os"
 import "strconv"
+import "fmt"
 
 //
 // example to show how to declare the arguments
@@ -27,20 +28,24 @@ type AssignArgs struct {
 }
 
 type AssignReply struct {
-	isFinish bool
-	isMap bool
-	taskID int
-	nReduce int
-	inputFile string
+	IsFinish bool
+	IsMap bool
+	TaskID int
+	NReduce int
+	InputFile string
+}
+
+func (reply* AssignReply) ReplyPrint(){
+	fmt.Printf("Finish: %t, Map: %t, taskID: %d, nReduce: %d, inputFile: %s\n", reply.IsFinish, reply.IsMap, reply.TaskID, reply.NReduce, reply.InputFile)
 }
 
 type FinishArgs struct {
-	isMap bool
-	taskID int
+	IsMap bool
+	TaskID int
 }
 
 type FinishReply struct {
-	isFinish bool
+	IsFinish bool
 }
 
 // Add your RPC definitions here.

@@ -19,6 +19,14 @@ type KeyValue struct {
 	Value string
 }
 
+// for sorting by key.
+type ByKey []KeyValue
+
+// for sorting by key.
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
+
 //
 // use ihash(key) % NReduce to choose the reduce
 // task number for each KeyValue emitted by Map.
@@ -51,15 +59,15 @@ func Worker(mapf func(string, string) []KeyValue,
 			continue
 		} else if isMap {
 			// map phase, taskID = fileIdx
-			tempFiles := make([]File, nReduce)
+			tempFiles := make([]*os.File, nReduce)
 			for i:=0; i<nReduce; i++ {
 				tempFilename := fmt.Sprintf("mr-%d-%d", taskID, i)
-				ff, err = os.CreateTemp("/", tempFilename)
+				ff, err := os.CreateTemp("/", tempFilename)
 				if err != nil {
 					log.Fatal(err)
 				}
 				tempFiles[i] = ff
-				// defer os.Remove(tempFiles[i].name())
+				// defer os.Remove(tempFiles[i].Name())
 			}
 
 			input, err := os.Open(inputFile)
@@ -72,9 +80,9 @@ func Worker(mapf func(string, string) []KeyValue,
 				log.Fatalf("cannot read %v", inputFile)
 			}
 			input.Close()
-			kva := mapf(input, string(content))
+			kva := mapf(inputFile, string(content))
 
-			encoders := make([]Encoder, nReduce)
+			encoders := make([]*json.Encoder, nReduce)
 			for i:=0; i<nReduce; i++ {
 				encoders[i] = json.NewEncoder(tempFiles[i])
 			}
@@ -87,17 +95,17 @@ func Worker(mapf func(string, string) []KeyValue,
 			}
 
 			for i, tmpf := range tempFiles {
-				interFilename := fmt.Sprintf("/%s%d%s%e", prefix, taskID, "-", i)
-				err := os.Rename(tmpf.name(), interFilename)
+				interFilename := fmt.Sprintf("/mr-%d-%d", taskID, i)
+				err := os.Rename(tmpf.Name(), interFilename)
 				if err != nil {
 					// dst already exists
-					os.Remove(tmpf.name())
+					os.Remove(tmpf.Name())
 				} else {
 					tmpf.Close()
 				}
 			}
 
-			finishMapTask(taskID)
+			finishTask(isMap, taskID)
 		} else{
 			// reduce phase
 			input, err := os.Open(inputFile)
@@ -109,7 +117,7 @@ func Worker(mapf func(string, string) []KeyValue,
 			dec := json.NewDecoder(input)
 			for {
 				var kv KeyValue
-				if err := dec.Decoder(&kv); err != nil {
+				if err := dec.Decode(&kv); err != nil {
 					break
 				}
 				kva = append(kva, kv)
@@ -117,7 +125,7 @@ func Worker(mapf func(string, string) []KeyValue,
 			input.Close()
 
 
-			sort.Sort(kva)
+			sort.Sort(ByKey(kva))
 			tempFilename := fmt.Sprintf("mr-out-%d", taskID)
 			tempFile, err := os.CreateTemp("/", tempFilename)
 			if err != nil {
@@ -142,11 +150,11 @@ func Worker(mapf func(string, string) []KeyValue,
 				i = j
 			}
 
-			outputFilename := fmt.Sprintf("/%s%d", prefix, taskID)
-			err := os.Rename(tempFile.name(), outputFilename)
+			outputFilename := fmt.Sprintf("/mr-out-%d", taskID)
+			err = os.Rename(tempFile.Name(), outputFilename)
 			if err != nil {
 				// dst already exists
-				os.Remove(tempFile.name())
+				os.Remove(tempFile.Name())
 			} else {
 				tempFile.Close()
 			}
@@ -160,18 +168,20 @@ func Worker(mapf func(string, string) []KeyValue,
 
 func getAssign() (bool, bool, int, int, string) {
 	args := AssignArgs{}
-	reply := AssignReply{taskID: -1}
+	reply := AssignReply{TaskID: -1}
 
+	reply.ReplyPrint()
 	ok := call("Coordinator.AssignTask", &args, &reply)
+	reply.ReplyPrint()
 	if ok {
-		return reply.isFinish, reply.isMap, reply.taskID, reply.nReduce, reply.inputFile
+		return reply.IsFinish, reply.IsMap, reply.TaskID, reply.NReduce, reply.InputFile
 	} else {
-		return true, false, -1, -1, nil
+		return true, false, -1, -1, ""
 	}
 }
 
-func finishMapTask(isMap bool, taskID int) {
-	args := FinishArgs{isMap: isMap, taskID: taskID}
+func finishTask(isMap bool, taskID int) {
+	args := FinishArgs{IsMap: isMap, TaskID: taskID}
 	reply := FinishReply{}
 	call("Coordinator.FinishTask", &args, &reply)
 }
