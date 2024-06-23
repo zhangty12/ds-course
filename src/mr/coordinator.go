@@ -122,7 +122,7 @@ func (c *Coordinator) AssignTask(args *AssignArgs, reply *AssignReply) error {
 
 	if flag {
 		//fmt.Println(isMap, taskID)
-		defer c.checkTask(isMap, taskID)
+		go c.checkTask(isMap, taskID)
 	}
 
 	return nil
@@ -204,6 +204,12 @@ func (c *Coordinator) Done() bool {
 
 	c.isFinish = true
 	fmt.Printf("Reduce phase finished\n")
+
+	for i:=0; i<len(c.files); i++ {
+		for j:=0; j<c.nReduce; j++ {
+			os.Remove(fmt.Sprintf("./mr-inter/mr-%d-%d", i, j))
+		}
+	}
 
 	ret = true
 	return ret

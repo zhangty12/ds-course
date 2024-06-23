@@ -62,9 +62,13 @@ func Worker(mapf func(string, string) []KeyValue,
 			tempFiles := make([]*os.File, nReduce)
 			for i:=0; i<nReduce; i++ {
 				tempFilename := fmt.Sprintf("mr-%d-%d", taskID, i)
-				ff, err := os.CreateTemp("/", tempFilename)
+
+				fmt.Println(tempFilename)
+
+				ff, err := os.CreateTemp("./mr-inter/", tempFilename)
 				if err != nil {
-					log.Fatal(err)
+					//log.Fatal(err)
+					fmt.Println(err)
 				}
 				tempFiles[i] = ff
 				// defer os.Remove(tempFiles[i].Name())
@@ -82,6 +86,8 @@ func Worker(mapf func(string, string) []KeyValue,
 			input.Close()
 			kva := mapf(inputFile, string(content))
 
+			fmt.Printf("Finish reading %s\n", inputFile)
+
 			encoders := make([]*json.Encoder, nReduce)
 			for i:=0; i<nReduce; i++ {
 				encoders[i] = json.NewEncoder(tempFiles[i])
@@ -95,7 +101,7 @@ func Worker(mapf func(string, string) []KeyValue,
 			}
 
 			for i, tmpf := range tempFiles {
-				interFilename := fmt.Sprintf("/mr-%d-%d", taskID, i)
+				interFilename := fmt.Sprintf("./mr-inter/mr-%d-%d", taskID, i)
 				err := os.Rename(tmpf.Name(), interFilename)
 				if err != nil {
 					// dst already exists
@@ -127,7 +133,7 @@ func Worker(mapf func(string, string) []KeyValue,
 
 			sort.Sort(ByKey(kva))
 			tempFilename := fmt.Sprintf("mr-out-%d", taskID)
-			tempFile, err := os.CreateTemp("/", tempFilename)
+			tempFile, err := os.CreateTemp("./mr-inter/", tempFilename)
 			if err != nil {
 				log.Fatal(err)
 			}
@@ -150,7 +156,7 @@ func Worker(mapf func(string, string) []KeyValue,
 				i = j
 			}
 
-			outputFilename := fmt.Sprintf("/mr-out-%d", taskID)
+			outputFilename := fmt.Sprintf("./mr-inter/mr-out-%d", taskID)
 			err = os.Rename(tempFile.Name(), outputFilename)
 			if err != nil {
 				// dst already exists
@@ -167,11 +173,12 @@ func Worker(mapf func(string, string) []KeyValue,
 }
 
 func getAssign() (bool, bool, int, int, string) {
-	args := AssignArgs{}
-	reply := AssignReply{TaskID: -1}
+	args := new(AssignArgs)
+	reply := new(AssignReply)
+	reply.TaskID = -1
 
 	reply.ReplyPrint()
-	ok := call("Coordinator.AssignTask", &args, &reply)
+	ok := call("Coordinator.AssignTask", args, reply)
 	reply.ReplyPrint()
 	if ok {
 		return reply.IsFinish, reply.IsMap, reply.TaskID, reply.NReduce, reply.InputFile
