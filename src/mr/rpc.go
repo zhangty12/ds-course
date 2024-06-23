@@ -29,14 +29,16 @@ type AssignArgs struct {
 
 type AssignReply struct {
 	IsFinish bool
+	IsAssign bool
 	IsMap bool
 	TaskID int
+	NFile int
 	NReduce int
 	InputFile string
 }
 
 func (reply* AssignReply) ReplyPrint(){
-	fmt.Printf("Finish: %t, Map: %t, taskID: %d, nReduce: %d, inputFile: %s\n", reply.IsFinish, reply.IsMap, reply.TaskID, reply.NReduce, reply.InputFile)
+	fmt.Printf("Finish: %t, Assign: %t, Map: %t, taskID: %d, nReduce: %d, inputFile: %s\n", reply.IsFinish, reply.IsAssign, reply.IsMap, reply.TaskID, reply.NReduce, reply.InputFile)
 }
 
 type FinishArgs struct {

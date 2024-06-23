@@ -61,6 +61,7 @@ func (c *Coordinator) AssignTask(args *AssignArgs, reply *AssignReply) error {
 	}
 	reply.IsFinish = false
 	reply.NReduce = c.nReduce
+	reply.NFile = len(c.files)
 
 	taskID := -1
 	isMap := c.isMapPhase
@@ -81,6 +82,7 @@ func (c *Coordinator) AssignTask(args *AssignArgs, reply *AssignReply) error {
 					continue
 				}
 
+				reply.IsAssign = true
 				reply.TaskID = i
 				reply.InputFile = c.files[i]
 				c.mapTaskAssign[i] = true
@@ -89,7 +91,7 @@ func (c *Coordinator) AssignTask(args *AssignArgs, reply *AssignReply) error {
 				flag = true
 
 				// fmt.Printf("Assign map task-%d\n", reply.TaskID)
-				reply.ReplyPrint()
+				// reply.ReplyPrint()
 				break
 			}
 		}
@@ -104,15 +106,16 @@ func (c *Coordinator) AssignTask(args *AssignArgs, reply *AssignReply) error {
 					continue
 				}
 
+				reply.IsAssign = true
 				reply.TaskID = i
-				reply.InputFile = fmt.Sprintf("mr-out-%d", i)
+				// reply.InputFile = fmt.Sprintf("./mr-inter/mr-%d-", i)
 				c.reduceTaskAssign[i] = true
 
 				taskID = i
 				flag = true
 
 				// fmt.Printf("Assign reduce task-%d\n", reply.TaskID)
-				reply.ReplyPrint()
+				// reply.ReplyPrint()
 				break
 			}
 		}
@@ -185,34 +188,24 @@ func (c *Coordinator) reduceIsDone() bool {
 // if the entire job has finished.
 //
 func (c *Coordinator) Done() bool {
-	ret := false
-
 	// Your code here.
 
-	// map phase
-	for !c.mapIsDone(){
-		// loop
-	}
+	if c.isMapPhase {
+		c.mapIsDone()
+	} else if !c.isFinish {
+		c.reduceIsDone()
+	} 
 
-	c.isMapPhase = false
-	fmt.Printf("Map phase finished\n")
-
-	// reduce phase
-	for !c.reduceIsDone(){
-		// loop
-	}
-
-	c.isFinish = true
-	fmt.Printf("Reduce phase finished\n")
-
-	for i:=0; i<len(c.files); i++ {
-		for j:=0; j<c.nReduce; j++ {
-			os.Remove(fmt.Sprintf("./mr-inter/mr-%d-%d", i, j))
+	if c.isFinish {
+		// fmt.Println("Removing intermediate files")
+		for i:=0; i<len(c.files); i++ {
+			for j:=0; j<c.nReduce; j++ {
+				os.Remove(fmt.Sprintf("./mr-inter/mr-%d-%d", i, j))
+			}
 		}
 	}
 
-	ret = true
-	return ret
+	return c.isFinish
 }
 
 //
@@ -232,6 +225,8 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c.mapTaskFinish = make([]bool, len(files))
 	c.reduceTaskAssign = make([]bool, nReduce)
 	c.reduceTaskFinish = make([]bool, nReduce)
+
+	os.Mkdir("./mr-inter/", 0755)
 
 	c.server()
 	return &c

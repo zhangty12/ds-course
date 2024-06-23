@@ -50,10 +50,18 @@ func Worker(mapf func(string, string) []KeyValue,
 	// CallExample()
 
 	for {
-		finished, isMap, taskID, nReduce, inputFile:= getAssign()
+		reply := getAssign()
+		finished := reply.IsFinish
+		isAssign := reply.IsAssign
+		isMap := reply.IsMap
+		taskID := reply.TaskID
+		nFile := reply.NFile
+		nReduce := reply.NReduce
+		inputFile := reply.InputFile
+
 		if finished {
 			break
-		} else if taskID == -1 {
+		} else if !isAssign {
 			// getAssign failed
 			time.Sleep(100 * time.Millisecond)
 			continue
@@ -61,9 +69,9 @@ func Worker(mapf func(string, string) []KeyValue,
 			// map phase, taskID = fileIdx
 			tempFiles := make([]*os.File, nReduce)
 			for i:=0; i<nReduce; i++ {
-				tempFilename := fmt.Sprintf("mr-%d-%d", taskID, i)
+				tempFilename := fmt.Sprintf("mr-%d-%d-", taskID, i)
 
-				fmt.Println(tempFilename)
+				// fmt.Println(tempFilename)
 
 				ff, err := os.CreateTemp("./mr-inter/", tempFilename)
 				if err != nil {
@@ -85,8 +93,6 @@ func Worker(mapf func(string, string) []KeyValue,
 			}
 			input.Close()
 			kva := mapf(inputFile, string(content))
-
-			fmt.Printf("Finish reading %s\n", inputFile)
 
 			encoders := make([]*json.Encoder, nReduce)
 			for i:=0; i<nReduce; i++ {
@@ -114,28 +120,30 @@ func Worker(mapf func(string, string) []KeyValue,
 			finishTask(isMap, taskID)
 		} else{
 			// reduce phase
-			input, err := os.Open(inputFile)
-			if err != nil {
-				log.Fatalf("cannot open %v", inputFile)
-			}
 
 			kva := []KeyValue{}
-			dec := json.NewDecoder(input)
-			for {
-				var kv KeyValue
-				if err := dec.Decode(&kv); err != nil {
-					break
-				}
-				kva = append(kva, kv)
-			}
-			input.Close()
 
+			for i:=0; i<nFile; i++ {
+				input, err := os.Open(fmt.Sprintf("./mr-inter/mr-%d-%d", i, taskID))
+				if err != nil {
+					log.Fatalf("cannot open %v", input.Name())
+				}
+				dec := json.NewDecoder(input)
+				for {
+					var kv KeyValue
+					if err := dec.Decode(&kv); err != nil {
+						break
+					}
+					kva = append(kva, kv)
+				}
+				input.Close()
+			}
 
 			sort.Sort(ByKey(kva))
-			tempFilename := fmt.Sprintf("mr-out-%d", taskID)
-			tempFile, err := os.CreateTemp("./mr-inter/", tempFilename)
+			tempFilename := fmt.Sprintf("mr-out-%d-", taskID)
+			tempFile, err := os.CreateTemp("./", tempFilename)
 			if err != nil {
-				log.Fatal(err)
+				fmt.Println(err)
 			}
 			
 			i := 0
@@ -156,7 +164,7 @@ func Worker(mapf func(string, string) []KeyValue,
 				i = j
 			}
 
-			outputFilename := fmt.Sprintf("./mr-inter/mr-out-%d", taskID)
+			outputFilename := fmt.Sprintf("./mr-out-%d", taskID)
 			err = os.Rename(tempFile.Name(), outputFilename)
 			if err != nil {
 				// dst already exists
@@ -172,18 +180,18 @@ func Worker(mapf func(string, string) []KeyValue,
 
 }
 
-func getAssign() (bool, bool, int, int, string) {
+func getAssign() *AssignReply {
 	args := new(AssignArgs)
 	reply := new(AssignReply)
-	reply.TaskID = -1
 
-	reply.ReplyPrint()
+	// reply.ReplyPrint()
 	ok := call("Coordinator.AssignTask", args, reply)
-	reply.ReplyPrint()
+	// reply.ReplyPrint()
 	if ok {
-		return reply.IsFinish, reply.IsMap, reply.TaskID, reply.NReduce, reply.InputFile
+		return reply
 	} else {
-		return true, false, -1, -1, ""
+		reply.IsFinish = true
+		return reply
 	}
 }
 
