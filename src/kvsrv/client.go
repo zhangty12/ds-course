@@ -8,6 +8,7 @@ import "math/big"
 type Clerk struct {
 	server *labrpc.ClientEnd
 	// You will have to modify this struct.
+	prevID int64
 }
 
 func nrand() int64 {
@@ -21,6 +22,7 @@ func MakeClerk(server *labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.server = server
 	// You'll have to add code here.
+
 	return ck
 }
 
@@ -34,10 +36,19 @@ func MakeClerk(server *labrpc.ClientEnd) *Clerk {
 // the types of args and reply (including whether they are pointers)
 // must match the declared types of the RPC handler function's
 // arguments. and reply must be passed as a pointer.
-func (ck *Clerk) Get(key string) string {
 
+func (ck *Clerk) Get(key string) string {
 	// You will have to modify this function.
-	return ""
+	reply := ""
+
+	for {
+		ok := ck.server.Call("KVServer.Get", &key, &reply)
+		if ok {
+			break
+		}
+	}
+
+	return reply
 }
 
 // shared by Put and Append.
@@ -48,8 +59,43 @@ func (ck *Clerk) Get(key string) string {
 // the types of args and reply (including whether they are pointers)
 // must match the declared types of the RPC handler function's
 // arguments. and reply must be passed as a pointer.
+
+
 func (ck *Clerk) PutAppend(key string, value string, op string) string {
 	// You will have to modify this function.
+	
+	var newID int64
+	for {
+		newID = nrand()
+		if newID != ck.prevID {
+			break
+		}
+	}
+
+	if op == "Put" {
+		args := PutAppendArgs{Key:key, Value:value, ID:newID, PrevID:ck.prevID}
+		reply := PutAppendReply{}
+		for {
+			ok := ck.server.Call("KVServer.Put", &args, &reply)
+			if ok {
+				break
+			}
+		}
+		ck.prevID = newID
+		return reply.Value
+	} else if op == "Append" {
+		args := PutAppendArgs{Key:key, Value:value, ID:newID, PrevID:ck.prevID}
+		reply := PutAppendReply{}
+		for {
+			ok := ck.server.Call("KVServer.Append", &args, &reply)
+			if ok {
+				break
+			}
+		}
+		ck.prevID = newID
+		return reply.Value
+	}
+
 	return ""
 }
 
