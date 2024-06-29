@@ -39,16 +39,17 @@ func MakeClerk(server *labrpc.ClientEnd) *Clerk {
 
 func (ck *Clerk) Get(key string) string {
 	// You will have to modify this function.
-	reply := ""
+	args := GetArgs{Key : key}
+	reply := GetReply{}
 
 	for {
-		ok := ck.server.Call("KVServer.Get", &key, &reply)
+		ok := ck.server.Call("KVServer.Get", &args, &reply)
 		if ok {
 			break
 		}
 	}
 
-	return reply
+	return reply.Value
 }
 
 // shared by Put and Append.
