@@ -77,6 +77,7 @@ type Raft struct {
 
 	commitCount int
 	applyCh chan ApplyMsg
+	commitIdx int
 }
 
 // return currentTerm and whether this server
@@ -264,7 +265,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 				go rf.sendEntries(i, command)
 			}
 		}
-		go rf.commit(command, index)
+		go rf.checkCommit()
 	}
 	rf.mu.Unlock()
 
@@ -276,12 +277,10 @@ func (rf *Raft) sendEntries(server int, command interface{}) {
 	nextIdx := tail-1
 	isLeader := rf.state == 2
 
-	fmt.Printf("nserver: %v | %v sending to %v | nextIdx : %v\n", len(rf.peers), rf.me, server, nextIdx)
-
 	for rf.killed() == false && isLeader && nextIdx != tail {
 		rf.mu.Lock()
 
-		args := AppendEntryArgs{ID : rf.me, Term : rf.term, NextIdx : nextIdx, Entry : rf.log[nextIdx]}
+		args := AppendEntryArgs{ID : rf.me, Term : rf.term, CommitIdx : rf.commitIdx, IsHeartbeat : false, NextIdx : nextIdx, Entry : rf.log[nextIdx]}
 		if nextIdx > 0 {
 			args.PrevTerm = rf.log[nextIdx-1].Term
 		}
@@ -289,13 +288,11 @@ func (rf *Raft) sendEntries(server int, command interface{}) {
 		reply := AppendEntryReply{}
 		rf.peers[server].Call("Raft.AppendEntries", &args, &reply)
 
-		if !reply.Succ {
-			if reply.Term > rf.term {
-				rf.state = 0
-				isLeader = false
-			} else {
-				nextIdx = reply.NextIdx
-			}
+		if reply.Term > rf.term {
+			rf.state = 0
+			isLeader = false
+		} else {
+			nextIdx = reply.NextIdx
 		}
 		
 		rf.mu.Unlock()
@@ -310,19 +307,26 @@ func (rf *Raft) sendEntries(server int, command interface{}) {
 	}
 }
 
-func (rf *Raft) commit(command interface{}, index int) {
+func (rf *Raft) commit(index int) {
+	rf.applyCh <- ApplyMsg{CommandValid : true, Command : rf.log[index].Command, CommandIndex : index}
+	rf.commitIdx = index
+}
+
+func (rf *Raft) checkCommit() {
 	isLeader := rf.state == 2
 	isFinish := false
 
 	for rf.killed() == false && isLeader && !isFinish{
-		time.Sleep(30 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 
 		rf.mu.Lock()
 
 		isLeader = rf.state == 2
 		if isLeader && rf.commitCount > (len(rf.peers)-1)/2 {
-			rf.applyCh <- ApplyMsg{CommandValid : true, Command : command, CommandIndex : index}
+			lastIdx := len(rf.log)-1
+			rf.commit(lastIdx)
 			isFinish = true
+			// fmt.Printf("%v commits new entry %v at %v\n", rf.me, rf.log[lastIdx].Command, lastIdx)
 		}
 
 		rf.mu.Unlock()
@@ -332,6 +336,9 @@ func (rf *Raft) commit(command interface{}, index int) {
 type AppendEntryArgs struct {
 	ID int
 	Term int
+	CommitIdx int
+
+	IsHeartbeat bool
 
 	PrevTerm int
 	NextIdx int
@@ -339,7 +346,7 @@ type AppendEntryArgs struct {
 }
 
 type AppendEntryReply struct {
-	Succ bool
+	// Succ bool
 	Term int
 	NextIdx int
 }
@@ -354,38 +361,45 @@ func (rf *Raft) AppendEntries(args *AppendEntryArgs, reply *AppendEntryReply) {
 		rf.leaderIsActive = true
 		rf.term = args.Term
 
+		if args.IsHeartbeat {
+			return
+		}
+
 		loglen := len(rf.log)
 
 		if args.NextIdx > loglen {
-			reply.Succ = false
 			reply.NextIdx = loglen
 			return
 		}
 
 		if args.NextIdx == 0 {
-			reply.Succ = true
 			reply.NextIdx = 1
 			if loglen == 0 {
 				rf.log = append(rf.log, args.Entry)
 			} else {
 				rf.log[0] = args.Entry
 			}
+
+			if args.CommitIdx >= 0 {
+				rf.commit(0)
+			}
 		} else {
 			if rf.log[args.NextIdx-1].Term == args.PrevTerm {
-				reply.Succ = true
 				reply.NextIdx = args.NextIdx+1
 				if loglen == args.NextIdx {
 					rf.log = append(rf.log, args.Entry)
 				} else {
 					rf.log[args.NextIdx] = args.Entry
 				}
+				
+				if args.CommitIdx >= args.NextIdx {
+					rf.commit(args.NextIdx)
+				}
 			} else {
-				reply.Succ = false
 				reply.NextIdx = args.NextIdx-1
 			}
 		}
 	} else {
-		reply.Succ = false
 		reply.Term = rf.term
 	}
 }
@@ -458,7 +472,7 @@ func (rf *Raft) heartbeat() {
 		if rf.state == 2 {
 			for i, _ := range rf.peers {
 				if i != rf.me {
-					args := AppendEntryArgs{ID : rf.me, Term : rf.term}
+					args := AppendEntryArgs{ID : rf.me, IsHeartbeat: true, Term : rf.term}
 					reply := AppendEntryReply{}
 					go rf.peers[i].Call("Raft.AppendEntries", &args, &reply)
 				}
@@ -515,6 +529,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// Your initialization code here (3A, 3B, 3C).
 	rf.votes = make([]RequestVoteReply, len(peers))
 	rf.applyCh = applyCh
+	rf.commitIdx = -1
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
