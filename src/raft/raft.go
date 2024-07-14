@@ -326,10 +326,10 @@ func (rf *Raft) sendEntries(server int, nextIdx int, votes []bool, term int) {
 				break
 			} else {
 				prevIdx = reply.PrevIdx
+				rf.mu.Unlock()
 			}
-			rf.mu.Unlock()
 		} else {
-			time.Sleep(50 * time.Millisecond)			
+			time.Sleep(30 * time.Millisecond)			
 		}
 	}
 
@@ -382,9 +382,8 @@ func (rf *Raft) sendEntries(server int, nextIdx int, votes []bool, term int) {
 				rf.mu.Unlock()
 				break
 			}
-			rf.mu.Unlock()
 		} else {
-			time.Sleep(50 * time.Millisecond)
+			time.Sleep(30 * time.Millisecond)
 		}
 	}
 }
@@ -488,7 +487,16 @@ func (rf *Raft) AppendEntries(args *AppendEntryArgs, reply *AppendEntryReply) {
 				return
 			} else if rf.log[args.PrevIdx].Term != args.PrevTerm {
 				reply.IsMatch = false
-				reply.PrevIdx = args.PrevIdx-1
+				term := rf.log[args.PrevIdx].Term
+				if rf.log[0].Term == term {
+					reply.PrevIdx = rf.commitIdx
+				} else {
+					idx := args.PrevIdx
+					for rf.log[idx].Term == term {
+						idx--
+					}
+					reply.PrevIdx = idx+1
+				}
 				return
 			}
 		}
@@ -582,7 +590,7 @@ func (rf *Raft) elect(){
 		}
 
 		rf.mu.Unlock()
-		ms := 50 + (rand.Int63() % 300)
+		ms := 300 + (rand.Int63() % 600)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 
 		// count votes
@@ -706,7 +714,7 @@ func (rf *Raft) ticker() {
 
 		// pause for a random amount of time between 50 and 350
 		// milliseconds.
-		ms := 50 + (rand.Int63() % 300)
+		ms := 300 + (rand.Int63() % 600)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 	}
 }
