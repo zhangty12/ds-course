@@ -75,8 +75,8 @@ type Raft struct {
 	term int
 	maxTerm int
 	
-	prevLeader int
-	prevTerm int
+	// prevLeader int
+	// prevTerm int
 	leader int
 	active bool
 	followIdx int
@@ -318,6 +318,7 @@ func (rf *Raft) sendEntries(server int, nextIdx int, votes []bool, term int) {
 
 				rf.state = 0
 				rf.term = reply.Term
+				rf.followIdx = rf.commitIdx
 				rf.mu.Unlock()
 				return
 			} else if reply.IsMatch {
@@ -373,6 +374,7 @@ func (rf *Raft) sendEntries(server int, nextIdx int, votes []bool, term int) {
 
 				rf.state = 0
 				rf.term = reply.Term
+				rf.followIdx = rf.commitIdx
 				rf.mu.Unlock()
 				return
 			} else {
@@ -517,6 +519,7 @@ func (rf *Raft) AppendEntries(args *AppendEntryArgs, reply *AppendEntryReply) {
 		reply.Term = rf.term
 
 		// commit from prev leader
+		/*
 		if rf.prevLeader == args.ID && rf.prevTerm == args.Term {
 			if args.CommitIdx > rf.commitIdx {
 				if rf.followIdx > args.CommitIdx {
@@ -526,6 +529,7 @@ func (rf *Raft) AppendEntries(args *AppendEntryArgs, reply *AppendEntryReply) {
 				}
 			}
 		}
+		*/
 	}
 }
 
@@ -687,11 +691,12 @@ func (rf *Raft) ticker() {
 			if !rf.active {
 				// become candidate
 				rf.state = 1
-
-				rf.prevLeader = rf.leader
-				rf.prevTerm = rf.term
-
 				rf.leader = rf.me
+				rf.followIdx = rf.commitIdx
+
+				// rf.prevLeader = rf.leader
+				// rf.prevTerm = rf.term
+
 				// fmt.Printf("%v becomes candidate\n", rf.me)
 			} else {
 				rf.active = false
@@ -733,7 +738,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	go rf.ticker()
 	go rf.elect()
 	go rf.heartbeat()
-	// go rf.sendCommitReq()
 
 	return rf
 }
