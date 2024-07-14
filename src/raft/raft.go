@@ -327,8 +327,9 @@ func (rf *Raft) sendEntries(server int, nextIdx int, votes []bool, term int) {
 				rf.state = 0
 				rf.term = reply.Term
 				rf.followIdx = rf.commitIdx
-				go rf.ticker()
 				rf.mu.Unlock()
+
+				go rf.ticker()
 				return
 			} else if reply.IsMatch {
 				rf.mu.Unlock()
@@ -383,8 +384,9 @@ func (rf *Raft) sendEntries(server int, nextIdx int, votes []bool, term int) {
 				rf.state = 0
 				rf.term = reply.Term
 				rf.followIdx = rf.commitIdx
-				go rf.ticker()
 				rf.mu.Unlock()
+
+				go rf.ticker()
 				return
 			} else {
 				votes[server] = true
@@ -610,7 +612,7 @@ func (rf *Raft) elect(){
 		}
 		rf.mu.Unlock()
 
-		ms := 400 + (rand.Int63() % 800)
+		ms := 150 + (rand.Int63() % 600)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 
 		// count votes
@@ -629,9 +631,10 @@ func (rf *Raft) elect(){
 				}
 
 				rf.state = 2
+				rf.mu.Unlock()
+
 				go rf.heartbeat(term)
 				go rf.sendCommitReq(term)
-				rf.mu.Unlock()
 				return
 			}
 		} else {
@@ -737,9 +740,9 @@ func (rf *Raft) ticker() {
 			rf.state = 1
 			rf.leader = rf.me
 			rf.followIdx = rf.commitIdx
+			rf.mu.Unlock()
 
 			go rf.elect()
-			rf.mu.Unlock()
 			return
 			// rf.prevLeader = rf.leader
 			// rf.prevTerm = rf.term
@@ -752,7 +755,7 @@ func (rf *Raft) ticker() {
 
 		// pause for a random amount of time between 50 and 350
 		// milliseconds.
-		ms := 400 + (rand.Int63() % 800)
+		ms := 150 + (rand.Int63() % 600)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 	}
 }
