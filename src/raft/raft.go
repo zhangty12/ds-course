@@ -555,12 +555,14 @@ func (rf *Raft) elect(){
 
 		votes := make([]RequestVoteReply, len(rf.peers))
 
+		var term int
 		if rf.state == 1 {
 			if rf.maxTerm > rf.term+1 {
 				rf.term = rf.maxTerm
 			} else {
 				rf.term++
 			}
+			term = rf.term
 			for i, _ := range rf.peers {
 				if i != rf.me {
 					reqVoteArgs := RequestVoteArgs{ID: rf.me, Term : rf.term, LogLen : len(rf.log)}
@@ -581,7 +583,7 @@ func (rf *Raft) elect(){
 
 		// count votes
 		rf.mu.Lock()
-		if rf.state == 1 {
+		if rf.state == 1 && rf.term == term {
 			cnt := 0
 			for _, v := range votes {
 				if v.Succ {
