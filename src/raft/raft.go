@@ -75,6 +75,8 @@ type Raft struct {
 	term int
 	maxTerm int
 	
+	prevLeader int
+	prevTerm int
 	leader int
 	active bool
 	followIdx int
@@ -275,13 +277,14 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	return index+1, term, isLeader
 }
 
-func (rf *Raft) sendEntries(server int, nextIdx int, votes []bool) {
+
+func (rf *Raft) sendEntries(server int, nextIdx int, votes []bool, term int) {
 	prevIdx := nextIdx -1
 
 	for rf.killed() == false && rf.state == 2 && prevIdx >=0 {
 		rf.mu.Lock()
-		
-		if rf.state != 2 {
+		if rf.term > term {
+			// abort
 			rf.mu.Unlock()
 			return
 		}
@@ -302,6 +305,12 @@ func (rf *Raft) sendEntries(server int, nextIdx int, votes []bool) {
 
 		if ok {
 			rf.mu.Lock()
+			if rf.term > term {
+				// abort
+				rf.mu.Unlock()
+				return
+			}
+
 			if reply.Term > rf.term {
 				if debug {
 					fmt.Printf("%v sees larger term %v > %v\n", rf.me, reply.Term, rf.term)
@@ -325,8 +334,8 @@ func (rf *Raft) sendEntries(server int, nextIdx int, votes []bool) {
 
 	for rf.killed() == false && rf.state == 2 {
 		rf.mu.Lock()
-
-		if rf.state != 2 {
+		if rf.term > term {
+			// abort
 			rf.mu.Unlock()
 			return
 		}
@@ -351,6 +360,12 @@ func (rf *Raft) sendEntries(server int, nextIdx int, votes []bool) {
 		
 		if ok {
 			rf.mu.Lock()
+			if rf.term > term {
+				// abort
+				rf.mu.Unlock()
+				return
+			}
+
 			if reply.Term > rf.term {
 				if debug {
 					fmt.Printf("%v sees larger term %v > %v\n", rf.me, reply.Term, rf.term)
@@ -396,13 +411,18 @@ func (rf *Raft) commit(index int) {
 	rf.commitIdx = index
 }
 
-func (rf *Raft) checkCommit(nextIdx int, votes []bool) {
+func (rf *Raft) checkCommit(nextIdx int, votes []bool, term int) {
 	isFinish := false
 
 	for rf.killed() == false && rf.state == 2 && !isFinish {
 		time.Sleep(50 * time.Millisecond)
 
 		rf.mu.Lock()
+
+		if rf.term > term {
+			rf.mu.Unlock()
+			return
+		}
 
 		cnt := 0
 		for i:=0; i<len(votes); i++ {
@@ -495,6 +515,17 @@ func (rf *Raft) AppendEntries(args *AppendEntryArgs, reply *AppendEntryReply) {
 		}
 
 		reply.Term = rf.term
+
+		// commit from prev leader
+		if rf.prevLeader == args.ID && rf.prevTerm == args.Term {
+			if args.CommitIdx > rf.commitIdx {
+				if rf.followIdx > args.CommitIdx {
+					rf.commit(args.CommitIdx)
+				} else {
+					rf.commit(rf.followIdx)
+				}
+			}
+		}
 	}
 }
 
@@ -633,10 +664,10 @@ func (rf *Raft) heartbeat() {
 		votes := make([]bool, len(rf.peers))
 		for i, _ := range rf.peers {
 			if i != rf.me {
-				go rf.sendEntries(i, nextIdx, votes)
+				go rf.sendEntries(i, nextIdx, votes, rf.term)
 			}
 		}
-		go rf.checkCommit(nextIdx, votes)
+		go rf.checkCommit(nextIdx, votes, rf.term)
 		
 		rf.mu.Unlock()
 	}
@@ -654,6 +685,10 @@ func (rf *Raft) ticker() {
 			if !rf.active {
 				// become candidate
 				rf.state = 1
+
+				rf.prevLeader = rf.leader
+				rf.prevTerm = rf.term
+
 				rf.leader = rf.me
 				// fmt.Printf("%v becomes candidate\n", rf.me)
 			} else {
