@@ -193,26 +193,29 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 
 	if args.Term > rf.term {
-		if rf.compareLogs(args.LogTerm, args.LogLen) {
-
-			prevState := rf.state
-
-			rf.state = 0
-			rf.term = args.Term
-			rf.leader = args.ID
-			rf.active = true
-			rf.followIdx = rf.commitIdx
-
-			reply.Succ = true
-			reply.Term = rf.term
-
-			if prevState != 0 {
-				go rf.ticker()
-			}
-		}
 		if args.Term > rf.maxTerm {
 			rf.maxTerm = args.Term
 		}
+		if rf.compareLogs(args.LogTerm, args.LogLen) {
+			reply.Succ = true
+			reply.Term = rf.term
+
+			rf.leader = args.ID
+			rf.active = true
+		} else {
+			reply.Succ = false
+			reply.Term = rf.term
+		}
+		prevState := rf.state
+
+		rf.state = 0
+		rf.term = args.Term
+		rf.followIdx = rf.commitIdx
+
+		if prevState != 0 {
+			go rf.ticker()
+		}
+
 	} else {
 		reply.Succ = false
 		reply.Term = rf.term
@@ -277,6 +280,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		index = len(rf.log)
 		term = rf.term
 
+		if debug {
+			fmt.Printf("%v adds new cmd at %v in term %v\n", rf.me, index, term)
+		}
+
 		entry := LogEntry{Term : term, Command : command}
 		rf.log = append(rf.log, entry)
 	}
@@ -308,7 +315,7 @@ func (rf *Raft) sendEntries(server int, nextIdx int, votes []bool, term int) {
 		ok := rf.peers[server].Call("Raft.AppendEntries", &args, &reply)
 
 		if debug {
-			fmt.Printf("%v to %v comm %v in term %v\n", rf.me, server, ok, rf.term)
+			fmt.Printf("%v send commit req to %v channel %v in term %v\n", rf.me, server, ok, rf.term)
 		}
 
 		if ok {
@@ -338,7 +345,8 @@ func (rf *Raft) sendEntries(server int, nextIdx int, votes []bool, term int) {
 				prevIdx = reply.PrevIdx
 				rf.mu.Unlock()
 			}
-		} 
+		}
+
 		time.Sleep(20 * time.Millisecond)
 	}
 
@@ -365,7 +373,7 @@ func (rf *Raft) sendEntries(server int, nextIdx int, votes []bool, term int) {
 		ok := rf.peers[server].Call("Raft.AppendEntries", &args, &reply)
 
 		if debug {
-			fmt.Printf("%v to %v comm %v in term %v\n", rf.me, server, ok, rf.term)
+			fmt.Printf("%v send commit req to %v channel %v in term %v\n", rf.me, server, ok, rf.term)
 		}
 		
 		if ok {
@@ -394,6 +402,7 @@ func (rf *Raft) sendEntries(server int, nextIdx int, votes []bool, term int) {
 				break
 			}
 		}
+
 		time.Sleep(20 * time.Millisecond)
 	}
 }
@@ -404,7 +413,7 @@ func (rf *Raft) printTerms() {
 		for _, e := range rf.log {
 			fmt.Printf("%d ", e.Term)
 		}
-		fmt.Printf("\n")
+		fmt.Printf("\n%v commitIdx %v\n", rf.me, rf.commitIdx)
 	}
 }
 
@@ -471,7 +480,7 @@ func (rf *Raft) AppendEntries(args *AppendEntryArgs, reply *AppendEntryReply) {
 	defer rf.mu.Unlock()
 
 	if debug {
-		fmt.Printf("%v receives append req from %v \n", rf.me, args.ID)
+		fmt.Printf("%v receives append req from %v with len %v \n", rf.me, args.ID, len(args.Entries))
 	}
 
 	if args.Term >= rf.term {
@@ -495,6 +504,10 @@ func (rf *Raft) AppendEntries(args *AppendEntryArgs, reply *AppendEntryReply) {
 			} else {
 				rf.commit(rf.followIdx)
 			}
+		}
+
+		if debug {
+			rf.printTerms()
 		}
 
 		if args.PrevIdx >= 0 {
@@ -658,6 +671,11 @@ func (rf *Raft) heartbeat(term int) {
 				if i != rf.me {
 					args := AppendEntryArgs{ID : rf.me, Term : rf.term, CommitIdx : rf.commitIdx}
 					reply := AppendEntryReply{}
+
+					if debug {
+					 	fmt.Printf("%v heartbeat to %v in term %v\n", rf.me, i, term)
+					 	rf.printTerms()
+					}
 
 					go rf.peers[i].Call("Raft.AppendEntries", &args, &reply)
 				}
