@@ -336,78 +336,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 
 func (rf *Raft) sendEntries(server int, votes []int, term int) {
-	/*
-	prevIdx := nextIdx-1
-	for rf.killed() == false {
-		rf.mu.Lock()
-		if rf.Term > term || nextIdx < rf.maxCommitReq {
-			// abort
-			if debug {
-				fmt.Printf("%v abort send commit req to %v, nextIdx %v rf.commit %v\n", rf.me, server, nextIdx, rf.CommitIdx)
-			}
-
-			rf.mu.Unlock()
-			return
-		}
-
-		args := AppendEntryArgs{ID : rf.me, Term : rf.Term, CommitIdx : rf.matchIndices[server], PrevIdx : prevIdx}
-		if prevIdx >= 0 {
-			args.PrevTerm = rf.Log[prevIdx].Term
-		}
-		reply := AppendEntryReply{}
-		
-		rf.mu.Unlock()
-
-		ok := rf.peers[server].Call("Raft.AppendEntries", &args, &reply)
-
-		if debug {
-			fmt.Printf("%v send commit req to %v prevIdx %v channel %v in term %v current term %v\n", rf.me, server, prevIdx, ok, term, rf.Term)
-			rf.printTerms()
-		}
-
-		if ok {
-			rf.mu.Lock()
-			if rf.Term > term {
-				// abort
-				rf.mu.Unlock()
-				return
-			}
-
-			if reply.Term > rf.Term {
-				if debug {
-					fmt.Printf("%v sees larger term %v > %v\n", rf.me, reply.Term, rf.Term)
-				}
-
-				rf.State = 0
-				rf.Term = reply.Term
-				rf.followIdx = rf.CommitIdx
-
-				rf.persist()
-
-				rf.mu.Unlock()
-				go rf.ticker()
-				return
-			} else if reply.IsMatch {
-				rf.mu.Unlock()
-				break
-			} else {
-				if debug && prevIdx == reply.PrevIdx {
-					panic("send commit req dead loop")
-				}
-				prevIdx = reply.PrevIdx
-				rf.persist()
-				rf.mu.Unlock()
-			}
-		}
-
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	if debug {
-		fmt.Printf("%v end previdx-%v = %v, nextIdx %v\n", rf.me, server, prevIdx, nextIdx)
-	}
-	*/
-
 	for rf.killed() == false {
 		rf.mu.Lock()
 		if rf.Term > term  {
@@ -621,7 +549,7 @@ func (rf *Raft) AppendEntries(args *AppendEntryArgs, reply *AppendEntryReply) {
 		*/
 
 		// append but ignore previous append requests
-		if args.Entries != nil && rf.followIdx <= args.PrevIdx + len(args.Entries){
+		if args.Entries != nil && rf.followIdx < args.PrevIdx + len(args.Entries) {
 			hd := args.PrevIdx+1
 			tl := args.PrevIdx + len(args.Entries)
 
@@ -648,19 +576,6 @@ func (rf *Raft) AppendEntries(args *AppendEntryArgs, reply *AppendEntryReply) {
 		}
 
 		reply.Term = rf.Term
-
-		// commit from prev leader
-		/*
-		if rf.prevLeader == args.ID && rf.prevTerm == args.Term {
-			if args.CommitIdx > rf.commitIdx {
-				if rf.followIdx > args.CommitIdx {
-					rf.commit(args.CommitIdx)
-				} else {
-					rf.commit(rf.followIdx)
-				}
-			}
-		}
-		*/
 	}
 }
 
