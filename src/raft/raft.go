@@ -83,7 +83,7 @@ type Raft struct {
 	matchIndices []int
 	followIdx int
 
-	// maxCommitReq int
+	maxCommitReq int
 	active bool
 	applyCh chan ApplyMsg
 }
@@ -335,7 +335,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 }
 
 
-func (rf *Raft) sendEntries(server int, votes []int, term int) {
+func (rf *Raft) sendEntries(server int, nextIdx int, votes []bool, term int) {
 	/*
 	prevIdx := nextIdx-1
 	for rf.killed() == false {
@@ -408,25 +408,23 @@ func (rf *Raft) sendEntries(server int, votes []int, term int) {
 	}
 	*/
 
+	prevIdx := rf.matchIndices[server]
+
 	for rf.killed() == false {
 		rf.mu.Lock()
-		if rf.Term > term  {
+		if rf.Term > term || nextIdx < rf.maxCommitReq {
 			// abort
 			if debug {
-				fmt.Printf("%v abort send commit req to %v rf.commit %v\n", rf.me, server, rf.CommitIdx)
+				fmt.Printf("%v abort send commit req to %v, nextIdx %v rf.commit %v\n", rf.me, server, nextIdx, rf.CommitIdx)
 			}
 
 			rf.mu.Unlock()
 			return
 		}
 
-		prevIdx := votes[server]
-		nextIdx := len(rf.Log)-1
-
-		if prevIdx == nextIdx {
-			rf.mu.Unlock()
-			time.Sleep(10 * time.Millisecond)
-			continue
+		if prevIdx > nextIdx {
+			fmt.Printf("%v to %v prevIdx %v > nextIdx %v\n", rf.me, server, prevIdx, nextIdx)
+			panic("empty commit req")
 		}
 
 		entries := make([]LogEntry, nextIdx - prevIdx)
@@ -470,10 +468,9 @@ func (rf *Raft) sendEntries(server int, votes []int, term int) {
 				go rf.ticker()
 				return
 			} else {
-				votes[server] = nextIdx
+				votes[server] = true
 				rf.mu.Unlock()
-				time.Sleep(10 * time.Millisecond)
-				continue
+				break
 			}
 		}
 
@@ -505,42 +502,56 @@ func (rf *Raft) commit(index int) {
 	rf.CommitIdx = index
 }
 
-func (rf *Raft) checkCommit(votes []int, term int) {
-	for rf.killed() == false {
+func (rf *Raft) checkCommit(nextIdx int, votes []bool, term int) {
+	isFinish := false
+
+	for rf.killed() == false && !isFinish {
 		rf.mu.Lock()
 
-		if rf.Term > term {
+		if rf.Term > term || nextIdx < rf.maxCommitReq {
 			rf.mu.Unlock()
 			return
 		}
 
-		matchIdx := -1
+		cnt := 1
 		for i:=0; i<len(votes); i++ {
-			if i != rf.me {
-				cnt := 1
-				for j:=0; j<len(votes); j++ {
-					if j != rf.me && votes[i] <= votes[j] {
-						cnt++
+			if i != rf.me && votes[i] {
+				cnt++
+			}
+		}
+		if cnt >= (len(votes)+1)/2 {
+			isFinish = true
+			rf.commit(nextIdx)
+			for i:=0; i<len(votes); i++ {
+				if i != rf.me && votes[i] {
+					rf.matchIndices[i] = nextIdx
+					if debug {
+						fmt.Printf("%v thinks %v has commit up to %v\n", rf.me, i, nextIdx)
 					}
 				}
-				if cnt >= (len(rf.peers)+1)/2 && votes[i] >= matchIdx {
-					matchIdx = votes[i]
-				}
 			}
 		}
-
-		rf.commit(matchIdx)
-		for i:=0; i<len(votes); i++ {
-			if i != rf.me && votes[i] >= matchIdx {
-				rf.matchIndices[i] = matchIdx
-				if debug {
-					fmt.Printf("%v thinks %v has commit up to %v\n", rf.me, i, matchIdx)
-				}
-			}
-		}
-		
 
 		rf.persist()
+
+		rf.mu.Unlock()
+		time.Sleep(30 * time.Millisecond)
+	}
+
+	// wait for others
+	for rf.killed() == false {
+		rf.mu.Lock()
+
+		if rf.Term > term || nextIdx < rf.maxCommitReq {
+			rf.mu.Unlock()
+			return
+		}
+
+		for i:=0; i<len(votes); i++ {
+			if i != rf.me && votes[i] {
+				rf.matchIndices[i] = nextIdx
+			}
+		}
 
 		rf.mu.Unlock()
 		time.Sleep(30 * time.Millisecond)
@@ -781,26 +792,67 @@ func (rf *Raft) heartbeat(term int) {
 
 
 func (rf *Raft) sendCommitReq(term int) {
-	rf.mu.Lock()
+	reboot := true
+	flag := false
+	for rf.killed() == false {
 
-	if debug {
-		fmt.Printf("%v starts leadership in term %v\n", rf.me, rf.Term)
-	}
-
-	if len(rf.Log) > 0 {
-		rf.Log[len(rf.Log)-1].Term = rf.Term
-	}
-
-	votes := make([]int, len(rf.peers))
-	for i:=0; i<len(rf.peers); i++ {
-		if i != rf.me {
-			votes[i] = rf.matchIndices[i]
-			go rf.sendEntries(i, votes, term)
+		rf.mu.Lock()
+		if rf.Term > term {
+			rf.mu.Unlock()
+			return
 		}
-	}
-	go rf.checkCommit(votes, term)
+	
+		if rf.CommitIdx == len(rf.Log)-1 && (!reboot || rf.CommitIdx == -1) {
+			// all cmd are committed
 
-	rf.mu.Unlock()
+			/*
+			// send heartbeats
+			for i, _ := range rf.peers {
+				if i != rf.me {
+					args := AppendEntryArgs{ID : rf.me, Term : rf.Term, CommitIdx : rf.commitIdx}
+					reply := AppendEntryReply{}
+
+					go rf.peers[i].Call("Raft.AppendEntries", &args, &reply)
+				}
+			}
+			*/
+			flag = false
+
+			rf.mu.Unlock()
+			time.Sleep(20 * time.Millisecond)
+
+			continue
+		}
+		if flag {
+			// old entry is running
+			rf.mu.Unlock()
+			time.Sleep(20 * time.Millisecond)
+
+			continue
+		}
+
+		nextIdx := len(rf.Log)-1
+		rf.Log[nextIdx].Term = rf.Term
+		rf.maxCommitReq = nextIdx
+
+		if debug {
+			fmt.Printf("%v dispatch idx %v in term %v\n", rf.me, nextIdx, rf.Term)
+		}
+
+		reboot = false
+		flag = true
+		votes := make([]bool, len(rf.peers))
+
+		for i, _ := range rf.peers {
+			if i != rf.me {
+				go rf.sendEntries(i, nextIdx, votes, term)
+			}
+		}
+		go rf.checkCommit(nextIdx, votes, term)
+		
+		rf.mu.Unlock()
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 func (rf *Raft) ticker() {
