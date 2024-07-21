@@ -53,6 +53,7 @@ type ApplyMsg struct {
 
 type LogEntry struct {
 	Term int
+	CompTerm int
 	Command interface{}
 }
 
@@ -81,11 +82,16 @@ type Raft struct {
 	CommitIdx int
 	// PrevIndices []int
 	matchIndices []int
+	prevIndices []int
+	reMatch []bool
 	followIdx int
 
 	// maxCommitReq int
 	active bool
 	applyCh chan ApplyMsg
+
+	cmdCond	*sync.Cond
+	commitCond *sync.Cond
 }
 
 // return currentTerm and whether this server
@@ -209,7 +215,7 @@ func (rf *Raft) compareLogs(term int, size int) bool {
 	ret := false
 	tail := len(rf.Log)-1
 	if tail >= 0 {
-		if (term > rf.Log[tail].Term) || (term == rf.Log[tail].Term && size > tail) {
+		if (term > rf.Log[tail].CompTerm) || (term == rf.Log[tail].CompTerm && size > tail) {
 			ret = true
 		}
 	} else {
@@ -235,13 +241,13 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 			rf.Leader = args.ID
 			rf.active = true
+
+			if debug {
+				fmt.Printf("%v in term %v votes for %v in term %v\n", rf.me, rf.Term, args.ID, args.Term)
+			}
 		} else {
 			reply.Succ = false
 			reply.Term = rf.Term
-		}
-
-		if debug {
-			fmt.Printf("%v in term %v votes for %v in term %v\n", rf.me, rf.Term, args.ID, args.Term)
 		}
 
 		prevState := rf.State
@@ -324,8 +330,11 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			fmt.Printf("%v adds new cmd at %v in term %v\n", rf.me, index, term)
 		}
 
-		entry := LogEntry{Term : term, Command : command}
+		entry := LogEntry{Term : term, CompTerm : term, Command : command}
 		rf.Log = append(rf.Log, entry)
+
+		// broadcast new cmd
+		rf.cmdCond.Broadcast()
 
 		rf.persist()
 	}
@@ -336,6 +345,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 
 func (rf *Raft) sendEntries(server int, votes []int, term int) {
+	prevIdx := rf.prevIndices[server]
+	isMatch := false
+	init := true
+
 	for rf.killed() == false {
 		rf.mu.Lock()
 		if rf.Term > term  {
@@ -348,20 +361,35 @@ func (rf *Raft) sendEntries(server int, votes []int, term int) {
 			return
 		}
 
-		prevIdx := votes[server]
 		nextIdx := len(rf.Log)-1
+		
+		// empty log or server has catched up
+		if nextIdx == -1 || votes[server] == nextIdx {
+			if debug {
+				fmt.Printf("%v thinks %v is up-to-date %v, no need to send commit req\n", rf.me, server, votes[server])
+			}
 
-		if prevIdx == nextIdx {
+			// wait for new cmd
+			rf.cmdCond.Wait()
 			rf.mu.Unlock()
-			time.Sleep(10 * time.Millisecond)
+
 			continue
 		}
 
-		entries := make([]LogEntry, nextIdx - prevIdx)
-		for i:= prevIdx+1; i<=nextIdx; i++{
-			entries[i-prevIdx-1] = rf.Log[i]
+		if init && rf.reMatch[server] {
+			prevIdx = nextIdx - 1
 		}
-		args := AppendEntryArgs{ID : rf.me, Term : rf.Term, CommitIdx : rf.matchIndices[server], PrevIdx : prevIdx, Entries : entries}
+		init = false
+		
+		var entries []LogEntry
+		if isMatch {
+			entries = make([]LogEntry, nextIdx - prevIdx)
+			for i:= prevIdx+1; i<=nextIdx; i++ {
+				entries[i-prevIdx-1] = rf.Log[i]
+			}
+		}
+
+		args := AppendEntryArgs{ID : rf.me, Term : rf.Term, MatchIdx : rf.matchIndices[server], CommitIdx : rf.CommitIdx, PrevIdx : prevIdx, Entries : entries}
 		if prevIdx >= 0 {
 			args.PrevTerm = rf.Log[prevIdx].Term
 		}
@@ -397,11 +425,25 @@ func (rf *Raft) sendEntries(server int, votes []int, term int) {
 				rf.mu.Unlock()
 				go rf.ticker()
 				return
-			} else {
+			} else if isMatch {
+				// send succ
 				votes[server] = nextIdx
+				prevIdx = nextIdx
+
+				rf.commitCond.Signal()
 				rf.mu.Unlock()
-				time.Sleep(10 * time.Millisecond)
-				continue
+
+			} else if reply.IsMatch {
+				// match for the first time, send entries next time
+				isMatch = true
+				rf.reMatch[server] = true
+				rf.mu.Unlock()
+			} else {
+				// match fail, decr prevIdx
+				rf.reMatch[server] = false
+				prevIdx = reply.PrevIdx
+				rf.prevIndices[server] = prevIdx
+				rf.mu.Unlock()
 			}
 		}
 
@@ -470,8 +512,11 @@ func (rf *Raft) checkCommit(votes []int, term int) {
 
 		rf.persist()
 
+		// wait for new votes
+		rf.commitCond.Wait()
 		rf.mu.Unlock()
-		time.Sleep(30 * time.Millisecond)
+
+		// time.Sleep(60 * time.Millisecond)
 	}
 }
 
@@ -479,6 +524,7 @@ type AppendEntryArgs struct {
 	ID int
 	Term int
 	CommitIdx int
+	MatchIdx int
 
 	PrevTerm int
 	PrevIdx int
@@ -516,14 +562,14 @@ func (rf *Raft) AppendEntries(args *AppendEntryArgs, reply *AppendEntryReply) {
 		}
 		rf.active = true
 
-		if args.CommitIdx > rf.CommitIdx {
+		if args.MatchIdx > rf.CommitIdx {
 			if debug {
-				fmt.Printf("%v receives append req from %v and matchidx %v\n", rf.me, args.ID, args.CommitIdx)
+				fmt.Printf("%v receives append req from %v and matchidx %v\n", rf.me, args.ID, args.MatchIdx)
 			}
-			rf.commit(args.CommitIdx)
+			rf.commit(args.MatchIdx)
+			rf.matchIndices[args.ID] = args.MatchIdx
 		}
 
-		/*
 		if args.PrevIdx >= 0 {
 			if args.PrevIdx >= len(rf.Log) {
 				reply.IsMatch = false
@@ -546,7 +592,6 @@ func (rf *Raft) AppendEntries(args *AppendEntryArgs, reply *AppendEntryReply) {
 		}
 
 		reply.IsMatch = true
-		*/
 
 		// append but ignore previous append requests
 		if args.Entries != nil && rf.followIdx < args.PrevIdx + len(args.Entries) {
@@ -565,10 +610,10 @@ func (rf *Raft) AppendEntries(args *AppendEntryArgs, reply *AppendEntryReply) {
 			rf.followIdx = tl
 		}
 
-		if debug {
-			rf.printTerms()
+		if args.CommitIdx >= rf.followIdx {
+			rf.commit(rf.followIdx)
+			rf.matchIndices[args.ID] = rf.followIdx
 		}
-
 
 	} else {
 		if debug {
@@ -622,14 +667,14 @@ func (rf *Raft) elect() {
 			if i != rf.me {
 				reqVoteArgs := RequestVoteArgs{ID: rf.me, Term : rf.Term, LogLen : len(rf.Log)}
 				if len(rf.Log) > 0 {
-					 reqVoteArgs.LogTerm = rf.Log[reqVoteArgs.LogLen-1].Term
+					 reqVoteArgs.LogTerm = rf.Log[reqVoteArgs.LogLen-1].CompTerm
 				}
 				go rf.sendRequestVote(i, &reqVoteArgs, &votes[i])
 			}
 		}
 		rf.mu.Unlock()
 
-		ms := 150 + (rand.Int63() % 600)
+		ms := 400 + (rand.Int63() % 800)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 
 		// count votes
@@ -675,8 +720,9 @@ func (rf *Raft) heartbeat(term int) {
 
 		if rf.CommitIdx == len(rf.Log)-1 {
 			for i, _ := range rf.peers {
-				if i != rf.me {
-					args := AppendEntryArgs{ID : rf.me, Term : rf.Term, CommitIdx : rf.matchIndices[i]}
+				// only update-to-date peers need heartbeats
+				if i != rf.me && rf.matchIndices[i] == rf.CommitIdx {
+					args := AppendEntryArgs{ID : rf.me, Term : rf.Term, MatchIdx : rf.matchIndices[i], CommitIdx : rf.CommitIdx}
 					reply := AppendEntryReply{}
 
 					if debug {
@@ -703,7 +749,7 @@ func (rf *Raft) sendCommitReq(term int) {
 	}
 
 	if len(rf.Log) > 0 {
-		rf.Log[len(rf.Log)-1].Term = rf.Term
+		rf.Log[len(rf.Log)-1].CompTerm = rf.Term
 	}
 
 	votes := make([]int, len(rf.peers))
@@ -747,7 +793,7 @@ func (rf *Raft) ticker() {
 
 		// pause for a random amount of time between 50 and 350
 		// milliseconds.
-		ms := 150 + (rand.Int63() % 600)
+		ms := 400 + (rand.Int63() % 800)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 	}
 }
@@ -771,12 +817,18 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.applyCh = applyCh
 	rf.CommitIdx = -1
 
+	rf.cmdCond = sync.NewCond(&rf.mu)
+	rf.commitCond = sync.NewCond(&rf.mu)
+
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
 	rf.matchIndices = make([]int, len(peers))
+	rf.prevIndices = make([]int, len(peers))
+	rf.reMatch = make([]bool, len(peers))
 	for i:=0; i<len(peers); i++ {
 		rf.matchIndices[i] = -1
+		rf.reMatch[i] = true
 	}
 
 	// start ticker goroutine to start elections
