@@ -80,10 +80,9 @@ type Raft struct {
 	Leader int
 	// FollowIdx int
 	CommitIdx int
-	// PrevIndices []int
 	matchIndices []int
-	prevIndices []int
-	reMatch []bool
+	// prevIndices []int
+	// reMatch []bool
 	followIdx int
 
 	// maxCommitReq int
@@ -252,9 +251,11 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 		prevState := rf.State
 
-		rf.State = 0
-		rf.Term = args.Term
-		rf.followIdx = rf.CommitIdx
+		if prevState != 0 || reply.Succ {
+			rf.State = 0
+			rf.Term = args.Term
+			rf.followIdx = rf.CommitIdx
+		}
 
 		rf.persist()
 
@@ -345,7 +346,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 
 func (rf *Raft) sendEntries(server int, votes []int, term int) {
-	prevIdx := rf.prevIndices[server]
+	var prevIdx int
 	isMatch := false
 	init := true
 
@@ -376,10 +377,10 @@ func (rf *Raft) sendEntries(server int, votes []int, term int) {
 			continue
 		}
 
-		if init && rf.reMatch[server] {
+		if init {
 			prevIdx = nextIdx - 1
+			init = false
 		}
-		init = false
 		
 		var entries []LogEntry
 		if isMatch {
@@ -436,13 +437,13 @@ func (rf *Raft) sendEntries(server int, votes []int, term int) {
 			} else if reply.IsMatch {
 				// match for the first time, send entries next time
 				isMatch = true
-				rf.reMatch[server] = true
+				// rf.reMatch[server] = true
 				rf.mu.Unlock()
 			} else {
 				// match fail, decr prevIdx
-				rf.reMatch[server] = false
+				// rf.reMatch[server] = false
 				prevIdx = reply.PrevIdx
-				rf.prevIndices[server] = prevIdx
+				// rf.prevIndices[server] = prevIdx
 				rf.mu.Unlock()
 			}
 		}
@@ -567,7 +568,6 @@ func (rf *Raft) AppendEntries(args *AppendEntryArgs, reply *AppendEntryReply) {
 				fmt.Printf("%v receives append req from %v and matchidx %v\n", rf.me, args.ID, args.MatchIdx)
 			}
 			rf.commit(args.MatchIdx)
-			rf.matchIndices[args.ID] = args.MatchIdx
 		}
 
 		if args.PrevIdx >= 0 {
@@ -612,7 +612,6 @@ func (rf *Raft) AppendEntries(args *AppendEntryArgs, reply *AppendEntryReply) {
 
 		if args.CommitIdx >= rf.followIdx {
 			rf.commit(rf.followIdx)
-			rf.matchIndices[args.ID] = rf.followIdx
 		}
 
 	} else {
@@ -717,23 +716,21 @@ func (rf *Raft) heartbeat(term int) {
 			rf.mu.Unlock()
 			return
 		}
+		
+		for i, _ := range rf.peers {
+			if i != rf.me {
+				args := AppendEntryArgs{ID : rf.me, Term : rf.Term, MatchIdx : rf.matchIndices[i], CommitIdx : rf.CommitIdx}
+				reply := AppendEntryReply{}
 
-		if rf.CommitIdx == len(rf.Log)-1 {
-			for i, _ := range rf.peers {
-				// only update-to-date peers need heartbeats
-				if i != rf.me && rf.matchIndices[i] == rf.CommitIdx {
-					args := AppendEntryArgs{ID : rf.me, Term : rf.Term, MatchIdx : rf.matchIndices[i], CommitIdx : rf.CommitIdx}
-					reply := AppendEntryReply{}
-
-					if debug {
-					 	fmt.Printf("%v heartbeat to %v in term %v\n", rf.me, i, term)
-					 	rf.printTerms()
-					}
-
-					go rf.peers[i].Call("Raft.AppendEntries", &args, &reply)
+				if debug {
+				 	fmt.Printf("%v heartbeat to %v in term %v\n", rf.me, i, term)
+				 	rf.printTerms()
 				}
+
+				go rf.peers[i].Call("Raft.AppendEntries", &args, &reply)
 			}
 		}
+		
 		rf.mu.Unlock()
 
 		time.Sleep(time.Duration(100) * time.Millisecond)
@@ -824,11 +821,11 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.readPersist(persister.ReadRaftState())
 
 	rf.matchIndices = make([]int, len(peers))
-	rf.prevIndices = make([]int, len(peers))
-	rf.reMatch = make([]bool, len(peers))
+	// rf.prevIndices = make([]int, len(peers))
+	// rf.reMatch = make([]bool, len(peers))
 	for i:=0; i<len(peers); i++ {
 		rf.matchIndices[i] = -1
-		rf.reMatch[i] = true
+		// rf.reMatch[i] = true
 	}
 
 	// start ticker goroutine to start elections
