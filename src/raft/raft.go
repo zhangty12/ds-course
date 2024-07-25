@@ -144,18 +144,6 @@ func (rf *Raft) readPersist(data []byte) {
 		return
 	}
 	// Your code here (3C).
-	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := labgob.NewDecoder(r)
-	// var xxx
-	// var yyy
-	// if d.Decode(&xxx) != nil ||
-	//    d.Decode(&yyy) != nil {
-	//   error...
-	// } else {
-	//   rf.xxx = xxx
-	//   rf.yyy = yyy
-	// }
 
 	if debug {
 		fmt.Printf("%v recovers from crash\n", rf.me)
@@ -382,6 +370,10 @@ func (rf *Raft) sendEntries(server int, votes []int, term int) {
 			init = false
 		}
 		
+		if prevIdx == -1 {
+			isMatch = true
+		}
+
 		var entries []LogEntry
 		if isMatch {
 			entries = make([]LogEntry, nextIdx - prevIdx)
@@ -549,7 +541,7 @@ func (rf *Raft) AppendEntries(args *AppendEntryArgs, reply *AppendEntryReply) {
 	}
 
 	if args.Term >= rf.Term {
-		if args.Term > rf.Term {
+		if rf.Leader != args.ID {
 			// find new leader
 			prevState := rf.State
 			rf.Leader = args.ID
@@ -566,6 +558,7 @@ func (rf *Raft) AppendEntries(args *AppendEntryArgs, reply *AppendEntryReply) {
 		if args.MatchIdx > rf.CommitIdx {
 			if debug {
 				fmt.Printf("%v receives append req from %v and matchidx %v\n", rf.me, args.ID, args.MatchIdx)
+				rf.printTerms()
 			}
 			rf.commit(args.MatchIdx)
 		}
@@ -608,6 +601,10 @@ func (rf *Raft) AppendEntries(args *AppendEntryArgs, reply *AppendEntryReply) {
 
 			rf.Log = rf.Log[:tl+1]
 			rf.followIdx = tl
+
+			if debug {
+				fmt.Printf("%v follow %v up to %v\n", rf.me, args.ID, tl)
+			}
 		}
 
 		if args.CommitIdx >= rf.followIdx {
@@ -820,6 +817,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
+	rf.followIdx = rf.CommitIdx
 	rf.matchIndices = make([]int, len(peers))
 	// rf.prevIndices = make([]int, len(peers))
 	// rf.reMatch = make([]bool, len(peers))
