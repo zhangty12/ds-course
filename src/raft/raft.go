@@ -666,25 +666,28 @@ func (rf *Raft) AppendEntries(args *AppendEntryArgs, reply *AppendEntryReply) {
 			rf.commit(args.MatchIdx)
 		}
 
-		if args.PrevIdx >= 0 {
-			if args.PrevIdx >= len(rf.Log) {
+		// lab 3D unfinished
+		if args.PrevIdx > rf.SIdx {
+			if args.PrevIdx >= len(rf.Log)+rf.SIdx+1 {
 				reply.IsMatch = false
-				reply.PrevIdx = len(rf.Log)-1
+				reply.PrevIdx = len(rf.Log)+rf.SIdx
 				return
-			} else if rf.Log[args.PrevIdx].Term != args.PrevTerm {
+			} else if rf.Log[args.PrevIdx-rf.SIdx-1].Term != args.PrevTerm {
 				reply.IsMatch = false
-				term := rf.Log[args.PrevIdx].Term
+				term := rf.Log[args.PrevIdx-rf.SIdx-1].Term
 				if rf.Log[0].Term == term {
 					reply.PrevIdx = rf.CommitIdx
 				} else {
 					idx := args.PrevIdx
-					for rf.Log[idx].Term == term {
+					for rf.Log[idx-rf.SIdx-1].Term == term {
 						idx--
 					}
 					reply.PrevIdx = idx-1
 				}
 				return
 			}
+		} else if args.PrevIdx < rf.SIdx {
+			panic("illegal prevIdx smaller than SIdx")
 		}
 
 		reply.IsMatch = true
@@ -698,7 +701,7 @@ func (rf *Raft) AppendEntries(args *AppendEntryArgs, reply *AppendEntryReply) {
 				if i>=len(rf.Log) {
 					rf.Log = append(rf.Log, args.Entries[i-hd])
 				} else {
-					rf.Log[i] = args.Entries[i-hd]
+					rf.Log[i-rf.SIdx-1] = args.Entries[i-hd]
 				}
 			}
 
