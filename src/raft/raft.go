@@ -75,11 +75,14 @@ type Raft struct {
 	State int
 	Term int
 	
-	// prevLeader int
-	// prevTerm int
 	Leader int
-	// FollowIdx int
 	CommitIdx int
+
+	// Snapshot
+	Snapshot []byte
+	STerm  int
+	SIdx int
+
 	matchIndices []int
 	// prevIndices []int
 	// reMatch []bool
@@ -133,6 +136,9 @@ func (rf *Raft) persist() {
 	e.Encode(rf.Term)
 	e.Encode(rf.Leader)
 	e.Encode(rf.CommitIdx)
+	e.Encode(rf.Snapshot)
+	e.Encode(rf.STerm)
+	e.Encode(rf.Offset)
 	raftState := w.Bytes()
 	rf.persister.Save(raftState, nil)
 }
@@ -157,8 +163,11 @@ func (rf *Raft) readPersist(data []byte) {
 	var leader int
 	// var followIdx int
 	var commitIdx int
+	var snapshot []byte
+	var sterm int
+	var sidx int
 
-	if d.Decode(&log) != nil || d.Decode(&state) != nil || d.Decode(&term) != nil || d.Decode(&leader) != nil || d.Decode(&commitIdx) != nil {
+	if d.Decode(&log) != nil || d.Decode(&state) != nil || d.Decode(&term) != nil || d.Decode(&leader) != nil || d.Decode(&commitIdx) != nil || d.Decode(&snapshot) != nil || d.Decode(&sterm) != nil || d.Decode(&sidx) != nil {
 		fmt.Printf("read persist failure\n")
 	} else {
 		rf.Log = log
@@ -166,6 +175,9 @@ func (rf *Raft) readPersist(data []byte) {
 		rf.Term = term
 		rf.Leader = leader
 		rf.CommitIdx = commitIdx
+		rf.Snapshot = snapshot
+		rf.STerm = sterm
+		rf.SIdx = sidx
 	}
 }
 
@@ -176,7 +188,19 @@ func (rf *Raft) readPersist(data []byte) {
 // that index. Raft should now trim its log as much as possible.
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (3D).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
+	if index-1 > rf.SIdx + len(rf.Log) && debug {
+		fmt.Printf("%v snapshot out of range %v > %v + %v \n", rf.me, index-1, rf.SIdx, len(rf.Log))
+	}
+
+	rf.Snapshot = snapshot
+	rf.STerm = rf.Log[index-2 - rf.SIdx].Term
+	rf.Log = rf.Log[index-1-rf.SIdx : ]
+	rf.SIdx = index-1
+
+	rf.persist()
 }
 
 
@@ -332,11 +356,11 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	return index+1, term, isLeader
 }
 
-
 func (rf *Raft) sendEntries(server int, votes []int, term int) {
 	var prevIdx int
 	isMatch := false
 	init := true
+	needSnapshot := false
 
 	for rf.killed() == false {
 		rf.mu.Lock()
@@ -350,7 +374,7 @@ func (rf *Raft) sendEntries(server int, votes []int, term int) {
 			return
 		}
 
-		nextIdx := len(rf.Log)-1
+		nextIdx := (rf.SIdx+1) + len(rf.Log)-1
 		
 		// empty log or server has catched up
 		if nextIdx == -1 || votes[server] == nextIdx {
@@ -370,27 +394,36 @@ func (rf *Raft) sendEntries(server int, votes []int, term int) {
 			init = false
 		}
 		
-		if prevIdx == -1 {
-			isMatch = true
-		}
-
-		var entries []LogEntry
-		if isMatch {
-			entries = make([]LogEntry, nextIdx - prevIdx)
-			for i:= prevIdx+1; i<=nextIdx; i++ {
-				entries[i-prevIdx-1] = rf.Log[i]
+		var ok bool
+		if !needSnapshot {
+			// send log entries or find prev idx
+			var entries []LogEntry
+			if isMatch {
+				entries = make([]LogEntry, nextIdx - prevIdx)
+				for i:= prevIdx+1; i<=nextIdx; i++ {
+					entries[i - prevIdx - 1] = rf.Log[i - rf.SIdx -1]
+				}
 			}
-		}
 
-		args := AppendEntryArgs{ID : rf.me, Term : rf.Term, MatchIdx : rf.matchIndices[server], CommitIdx : rf.CommitIdx, PrevIdx : prevIdx, Entries : entries}
-		if prevIdx >= 0 {
-			args.PrevTerm = rf.Log[prevIdx].Term
+			args := AppendEntryArgs{ID : rf.me, Term : rf.Term, MatchIdx : rf.matchIndices[server], CommitIdx : rf.CommitIdx, PrevIdx : prevIdx, Entries : entries}
+			if prevIdx > rf.SIdx {
+				args.PrevTerm = rf.Log[prevIdx - rf.SIdx -1].Term
+			} else if prevIdx == rf.SIdx {
+				args.PrevTerm = rf.STerm
+			}
+			reply := AppendEntryReply{}
+
+			rf.mu.Unlock()
+			ok = rf.peers[server].Call("Raft.AppendEntries", &args, &reply)
+		} else {
+			// sync snapshot
+			args := InstallSnapshotArgs{ID : rf.me, Term : rf.Term, Snapshot : rf.Snapshot, STerm : rf.STerm, SIdx : rf.SIdx}
+			reply := InstallSnapshotReply{}
+
+			rf.mnu.Unlock()
+			ok = rf.peers[server].Call("Raft.InstallSnapshot", &args, &reply)
 		}
-		reply := AppendEntryReply{}
 		
-		rf.mu.Unlock()
-
-		ok := rf.peers[server].Call("Raft.AppendEntries", &args, &reply)
 
 		if debug {
 			fmt.Printf("%v send commit req to %v prevIdx %v channel %v in term %v current term %v len %v\n", rf.me, server, prevIdx, ok, term, rf.Term, len(entries))
@@ -418,24 +451,38 @@ func (rf *Raft) sendEntries(server int, votes []int, term int) {
 				rf.mu.Unlock()
 				go rf.ticker()
 				return
+			} else if needSnapshot {
+				// snapshot install succ
+				needSnapshot = false
+				isMatch = true
+				votes[sever] = prevIdx
+
+				rf.mu.Unlock()
 			} else if isMatch {
 				// send succ
 				votes[server] = nextIdx
 				prevIdx = nextIdx
 
 				rf.commitCond.Signal()
+				
 				rf.mu.Unlock()
-
 			} else if reply.IsMatch {
 				// match for the first time, send entries next time
 				isMatch = true
 				// rf.reMatch[server] = true
+
 				rf.mu.Unlock()
-			} else {
+			} else if reply.PrevIdx >= rf.SIdx {
 				// match fail, decr prevIdx
 				// rf.reMatch[server] = false
 				prevIdx = reply.PrevIdx
 				// rf.prevIndices[server] = prevIdx
+
+				rf.mu.Unlock()
+			} else {
+				needSnapshot = true
+				prevIdx = rf.SIdx
+
 				rf.mu.Unlock()
 			}
 		}
@@ -529,6 +576,62 @@ type AppendEntryReply struct {
 	PrevIdx int
 	IsMatch bool
 }
+
+
+type InstallSnapshotArgs struct {
+	ID int
+	Term int
+	Snapshot []byte
+	STerm int
+	SIdx int
+}
+
+type InstallSnapshotReply struct {
+	Term int
+}
+
+func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
+	rf.mu.Lock()
+	defer rf.persist()
+	defer rf.mu.Unlock()
+
+	if args.Term >= rf.Term {
+		if rf.Leader != args.ID {
+			// find new leader
+			prevState := rf.State
+			rf.Leader = args.ID
+			rf.Term = args.Term
+			rf.State = 0
+			rf.followIdx = rf.CommitIdx
+
+			if prevState != 0 {
+				go rf.ticker()
+			}
+		}
+		rf.active = true
+
+		if rf.SIdx >= args.SIdx && debug {
+			fmt.Printf("%v rej install-snapshot req from %v, SIdx %v > %v\n", rf.me, args.ID, rf.SIdx, args.SIdx)
+		} else {
+			rf.Snapshot = snapshot
+			rf.STerm = args.STerm
+			// truncate current log
+			if rf.SIdx+1+len(rf.Log) <= args.SIdx {
+				rf.Log = nil
+			} else {
+				rf.Log = rf.Log[args.SIdx-rf.SIdx : ]
+			}
+			rf.SIdx = args.SIdx
+		}
+	} else {
+		if debug {
+			fmt.Printf("%v rej install-snapshot req from %v, terms %v > %v\n", rf.me, args.ID, rf.Term, args.Term)
+		}
+
+		reply.Term = rf.Term
+	}
+}
+
 
 func (rf *Raft) AppendEntries(args *AppendEntryArgs, reply *AppendEntryReply) {
 	rf.mu.Lock()
@@ -670,7 +773,7 @@ func (rf *Raft) elect() {
 		}
 		rf.mu.Unlock()
 
-		ms := 400 + (rand.Int63() % 800)
+		ms := 150 + (rand.Int63() % 600)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 
 		// count votes
@@ -787,7 +890,7 @@ func (rf *Raft) ticker() {
 
 		// pause for a random amount of time between 50 and 350
 		// milliseconds.
-		ms := 400 + (rand.Int63() % 800)
+		ms := 150 + (rand.Int63() % 600)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 	}
 }
@@ -810,6 +913,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// Your initialization code here (3A, 3B, 3C).
 	rf.applyCh = applyCh
 	rf.CommitIdx = -1
+	rf.Offset = -1
 
 	rf.cmdCond = sync.NewCond(&rf.mu)
 	rf.commitCond = sync.NewCond(&rf.mu)
